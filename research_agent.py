@@ -58,6 +58,7 @@ ACTIONS = {
     "company_research", "competitor_analysis", "market_research",
     "industry_intelligence", "news_monitoring", "company_discovery",
     "deep_website_analysis", "timeline", "swot", "tech_analysis", "memory",
+    "task_create", "task_list", "task_update", "task_close",
 }
 
 # Firecrawl extraction schema for company profiling.

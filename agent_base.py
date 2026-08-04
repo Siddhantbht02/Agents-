@@ -29,6 +29,17 @@ CREATE TABLE IF NOT EXISTS department_logs (
   detail JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS tasks (
+  id BIGSERIAL PRIMARY KEY,
+  department TEXT NOT NULL DEFAULT 'unknown',
+  title TEXT NOT NULL,
+  description TEXT,
+  assignee TEXT,
+  due_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -98,6 +109,67 @@ class BaseAgent:
                     (self.DEPARTMENT, action, Json(detail or {})))
         except Exception:
             pass
+
+    # ---------- universal task manager ----------
+
+    def task_create(self, title, description="", assignee=None, due_at=None):
+        with self._db().cursor() as cur:
+            cur.execute(
+                "INSERT INTO tasks (department, title, description, assignee, due_at) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                (self.DEPARTMENT, title, description, assignee,
+                 due_at if isinstance(due_at, str) else None))
+            tid = cur.fetchone()[0]
+        self._log("task_create", {"task_id": tid, "title": title})
+        return {"task_id": tid, "status": "open", "human_approval_required": False}
+
+    def task_list(self, status=None, limit=50):
+        with self._db().cursor() as cur:
+            if status:
+                cur.execute("SELECT id, department, title, assignee, status, due_at "
+                            "FROM tasks WHERE status = %s ORDER BY updated_at DESC LIMIT %s",
+                            (status, int(limit)))
+            else:
+                cur.execute("SELECT id, department, title, assignee, status, due_at "
+                            "FROM tasks ORDER BY updated_at DESC LIMIT %s", (int(limit),))
+            return [{"task_id": r[0], "department": r[1], "title": r[2], "assignee": r[3],
+                     "status": r[4], "due_at": str(r[5]) if r[5] else None} for r in cur.fetchall()]
+
+    def task_update(self, task_id, status=None, assignee=None):
+        fields, params = [], []
+        if status is not None:
+            fields.append("status = %s"); params.append(status)
+        if assignee is not None:
+            fields.append("assignee = %s"); params.append(assignee)
+        if not fields:
+            return {"task_id": task_id, "human_approval_required": False}
+        fields.append("updated_at = now()")
+        params.extend([task_id])
+        with self._db().cursor() as cur:
+            cur.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id = %s", params)
+        self._log("task_update", {"task_id": task_id, "status": status})
+        return {"task_id": task_id, "status": status, "human_approval_required": False}
+
+    def task_close(self, task_id):
+        return self.task_update(task_id, status="done")
+
+    # ---------- notifications ----------
+
+    def notify(self, text, webhook_url, channel="slack"):
+        if not webhook_url:
+            return False
+        payload = {"text": text} if channel == "slack" else {"content": text}
+        try:
+            self._http_json("POST", webhook_url, payload)
+            return True
+        except Exception:
+            return False
+
+    def notify_slack(self, text):
+        return self.notify(text, os.getenv("SLACK_WEBHOOK_URL"), "slack")
+
+    def notify_discord(self, text):
+        return self.notify(text, os.getenv("DISCORD_WEBHOOK_URL"), "discord")
 
     # ---------- Redis ----------
 
@@ -177,6 +249,18 @@ class BaseAgent:
             task = task or {}
             action = task.get("action")
             fn = handlers.get(action)
+            if fn is None:
+                shared = {
+                    "task_create": lambda: self.task_create(
+                        task.get("title"), task.get("description", ""),
+                        task.get("assignee"), task.get("due_at")),
+                    "task_list": lambda: self.task_list(
+                        task.get("status"), task.get("limit", 50)),
+                    "task_update": lambda: self.task_update(
+                        task.get("task_id"), task.get("status"), task.get("assignee")),
+                    "task_close": lambda: self.task_close(task.get("task_id")),
+                }
+                fn = shared.get(action)
             if not fn:
                 raise ValueError(f"unknown action: {action}")
             result = fn()

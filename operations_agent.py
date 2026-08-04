@@ -106,6 +106,7 @@ ACTIONS = {
     "create_client", "get_client", "update_client", "update_client_status", "onboarding_checklist",
     "activate_client", "generate_document", "create_meeting", "add_meeting_notes",
     "kb_add", "kb_search", "create_project", "update_project", "memory",
+    "task_create", "task_list", "task_update", "task_close",
 }
 
 

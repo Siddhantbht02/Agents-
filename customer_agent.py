@@ -132,6 +132,7 @@ ACTIONS = {
     "faq_answer", "kb_add", "kb_search", "escalate", "draft_response",
     "health_score", "churn_prediction", "renewal_plan", "advocacy", "qbr",
     "community_post", "community_event", "sentiment", "memory",
+    "task_create", "task_list", "task_update", "task_close",
 }
 
 

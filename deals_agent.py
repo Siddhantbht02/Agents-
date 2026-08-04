@@ -169,6 +169,7 @@ ACTIONS = {
     "objection_library", "proposal", "demo_prototype", "deal_room", "agreement",
     "pricing", "crm_hygiene", "pipeline_report", "forecast", "reactivate",
     "win_loss", "close_deal", "create_deal", "memory",
+    "task_create", "task_list", "task_update", "task_close",
 }
 
 

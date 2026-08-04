@@ -75,7 +75,7 @@ ACTIONS = {
     "trend_research", "trend_summary", "content_strategy", "write_copy",
     "generate_image", "create_campaign", "set_brand_voice", "get_brand_voice",
     "social_plan", "analytics_summary", "competitor_analysis", "store_asset",
-    "memory",
+    "memory", "task_create", "task_list", "task_update", "task_close",
 }
 
 
@@ -278,18 +278,6 @@ class MarketingAgent(BaseAgent):
             return [{"title": r[0], "kind": r[1], "created_at": r[2].isoformat()}
                     for r in cur.fetchall()]
 
-    # ---------- review notifications ----------
-
-    def notify_slack(self, text):
-        url = os.getenv("SLACK_WEBHOOK_URL")
-        if not url:
-            return False
-        try:
-            self._http_json("POST", url, {"text": text})
-            return True
-        except Exception:
-            return False
-
     # ---------- 14. structured output for the CEO Agent ----------
 
     def run(self, task):
@@ -325,7 +313,7 @@ def demo():
     expected = {"trend_research", "trend_summary", "content_strategy", "write_copy",
                 "generate_image", "create_campaign", "set_brand_voice", "get_brand_voice",
                 "social_plan", "analytics_summary", "competitor_analysis", "store_asset",
-                "memory"}
+                "memory", "task_create", "task_list", "task_update", "task_close"}
     assert ACTIONS == expected, ACTIONS - expected
     assert a.run({"action": "nope"})["status"] == "error"
     assert a.run({"action": "write_copy", "platform": "tiktok", "topic": "x"})["status"] == "error"

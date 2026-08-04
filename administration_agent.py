@@ -103,6 +103,7 @@ ACTIONS = {
     "schedule_meeting", "find_slots", "cancel_meeting", "calendar_upcoming",
     "triage_email", "draft_reply", "store_file", "list_files", "move_file",
     "rename_file", "delete_file", "generate_report", "memory",
+    "task_create", "task_list", "task_update", "task_close",
 }
 
 
