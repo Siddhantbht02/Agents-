@@ -218,8 +218,11 @@ class BaseAgent:
         text = self._chat(system, user, temperature=temperature)
         m = re.search(r"\{.*\}", text, re.S)
         if m:
+            candidate = m.group(0).strip()
+            while candidate.startswith("{{") and candidate.endswith("}}"):
+                candidate = candidate[1:-1]
             try:
-                return json.loads(m.group(0))
+                return json.loads(candidate)
             except json.JSONDecodeError:
                 pass
         return {"text": text}
