@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+media/
+docs/
+deal_docs/
+.env
