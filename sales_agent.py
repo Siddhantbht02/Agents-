@@ -362,6 +362,8 @@ class SalesAgent(BaseAgent):
     # ---------- 4. outreach email drafting (draft only, human approval) ----------
 
     def draft_email(self, lead, intent="cold_email", context=None):
+        if not isinstance(lead, dict):
+            lead = {"company_name": str(lead)}
         to = lead.get("contact_email")
         name = lead.get("contact_name") or "there"
         company = lead.get("company_name") or lead.get("name") or lead.get("domain") or "your company"

@@ -176,10 +176,26 @@ Available departments (dependency order: research & marketing first, then
 sales, deals, operations, customer, administration). Use only these department
 names: research, sales, deals, marketing, operations, customer, administration.
 
+Department selection guide (user intent -> department):
+  find/discover companies, competitor, market trends, industry, news, swot, tech -> research
+  generate leads, cold outreach, cold email, prospecting, crm -> sales
+  prospect reply, proposal, demo, pricing, pipeline, forecast, close deal -> deals
+  social media post, linkedin post, campaign, copy, brand voice, image, ad, content -> marketing
+  client onboarding, documents, projects, meetings with client, knowledge base -> operations
+  support ticket, refund, customer health, churn, community, qbr -> customer
+  invoice, calendar, scheduling, email management, reports, files -> administration
+
+Action disambiguation (research):
+  "top N companies", "list of companies", "companies in <country/industry>",
+  "find startups" -> research/company_discovery with params {"criteria": "<the list criteria>"}
+  deep research on ONE named company -> research/company_research with params {"company": "<company name>"}
+  A request for a list is always company_discovery, never company_research.
+
 Each step must pick ONE action from the catalog below and ONLY include the
-listed parameters for that action. Omit parameters you don't know; never invent
-parameters or actions. Chain dependent steps in order (research before sales,
-sales before deals, deals before operations).
+listed parameters for that action. Omit parameters whose value you don't know;
+NEVER use placeholders like "your industry", "unknown", or "number of days".
+Never invent parameters or actions. Chain dependent steps in order (research
+before sales, sales before deals, deals before operations).
 
 Catalog (department: action -> params):
 {catalog}
@@ -206,16 +222,20 @@ class CEOAgent(BaseAgent):
     # ---------- planning ----------
 
     def _plan(self, request):
-        text = self._chat_json(
+        text = self._chat(
             PLANNER_SYSTEM.replace("{catalog}", json.dumps(CATALOG)),
             str(request), temperature=0.2)
-        steps = text.get("steps") or []
+        # some models split the plan into multiple JSON objects; merge their steps
+        steps = []
+        for obj in self._all_json(text):
+            if isinstance(obj, dict):
+                steps.extend(obj.get("steps") or [])
         validated = []
         for s in steps:
             dept = s.get("department")
             action = s.get("action")
             params = {k: v for k, v in (s.get("params") or {}).items()
-                      if k in CATALOG.get(dept, {}).get(action, [])}
+                      if k in CATALOG.get(dept, {}).get(action, []) and v is not None}
             if dept in CATALOG and action in CATALOG[dept]:
                 validated.append({"department": dept, "action": action, "params": params})
         return validated

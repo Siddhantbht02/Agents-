@@ -6,9 +6,16 @@ Reused by sales_agent.py and marketing_agent.py so the services are wired once.
 import json
 import os
 import re
+import time
 from urllib.parse import urlparse, urlencode
 from urllib import request as urllib_request
 from urllib import error as urllib_error
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 try:
     import psycopg2
@@ -80,6 +87,13 @@ class BaseAgent:
                 raw = resp.read().decode("utf-8", "replace")
                 return json.loads(raw) if raw else None
         except urllib_error.HTTPError as e:
+            if e.code == 429:
+                retries = int(headers.get("X-Retry-429") or 0)
+                if retries < 3:
+                    time.sleep(5 * (retries + 1))
+                    headers = dict(headers or {})
+                    headers["X-Retry-429"] = str(retries + 1)
+                    return self._http_json(method, url, payload, headers, timeout, form)
             raise RuntimeError(f"{url} -> HTTP {e.code}: "
                                f"{e.read().decode('utf-8', 'replace')[:500]}") from e
         except urllib_error.URLError as e:
@@ -208,24 +222,44 @@ class BaseAgent:
             {"model": model, "temperature": temperature, "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}]},
-            {"Authorization": f"Bearer {key}"})
+            {"Authorization": f"Bearer {key}"}, timeout=180)
         try:
-            return data["choices"][0]["message"]["content"]
+            text = data["choices"][0]["message"]["content"]
+            # strip DeepSeek-style reasoning blocks, they pollute structured output
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+            return text.strip()
         except (KeyError, IndexError, TypeError):
             raise RuntimeError(f"Unexpected LLM response: {data}") from None
 
     def _chat_json(self, system, user, temperature=0.4):
-        text = self._chat(system, user, temperature=temperature)
-        m = re.search(r"\{.*\}", text, re.S)
-        if m:
-            candidate = m.group(0).strip()
-            while candidate.startswith("{{") and candidate.endswith("}}"):
-                candidate = candidate[1:-1]
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                pass
+        text = self._chat(system, user, temperature=temperature).strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+        while text.startswith("{{") and text.endswith("}}"):
+            text = text[1:-1]
+        for obj in self._all_json(text):
+            if isinstance(obj, dict):
+                return obj
         return {"text": text}
+
+    @staticmethod
+    def _all_json(text):
+        """Yield every complete top-level JSON object in text."""
+        out = []
+        dec = json.JSONDecoder()
+        i = 0
+        while i < len(text):
+            try:
+                j = text.index("{", i)
+            except ValueError:
+                break
+            try:
+                obj, end = dec.raw_decode(text[j:])
+            except json.JSONDecodeError:
+                i = j + 1
+                continue
+            out.append(obj)
+            i = j + end
+        return out
 
     # ---------- Tavily search ----------
 
