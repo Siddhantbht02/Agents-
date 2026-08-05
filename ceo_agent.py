@@ -61,6 +61,8 @@ CATALOG = {
         "generate_leads": ["criteria", "count"],
         "discover_companies": ["criteria", "count"],
         "enrich_company": ["url"],
+        "enrich_contact": ["email", "name", "domain", "linkedin_url", "organization_name"],
+        "apollo_search": ["keywords", "domain", "count"],
         "update_crm": ["company", "lead"],
         "draft_email": ["lead", "intent", "context"],
         "classify_reply": ["email"],

@@ -22,6 +22,7 @@ Or import:  from sales_agent import SalesAgent; print(SalesAgent().run(task))
 
 Environment variables:
   TAVILY_API_KEY, FIRECRAWL_API_KEY          required for search/scrape
+  APOLLO_API_KEY                              contact enrichment (people/match, ~1 credit/contact)
   OPENAI_API_KEY, LLM_MODEL, LLM_BASE_URL    LLM for email writing / reply fallback
   DATABASE_URL                                postgresql://user:pass@host:5432/db
   REDIS_URL                                   optional, batch cache only
@@ -219,6 +220,135 @@ class SalesAgent(BaseAgent):
         data["domain"] = _domain_of(url) or _domain_of(data.get("url"))
         self._log("enrich", {"domain": data["domain"], "url": url})
         return data
+
+    # ---------- 2b. Apollo enrichment ----------
+
+    def _apollo_headers(self):
+        key = os.getenv("APOLLO_API_KEY")
+        if not key:
+            raise RuntimeError("APOLLO_API_KEY not set")
+        return {"X-Api-Key": key, "Cache-Control": "no-cache"}
+
+    def apollo_company_search(self, keywords=None, domain=None, count=10):
+        """Free-plan Apollo search: companies by keyword or domain (0 credits)."""
+        payload = {"page": 1, "per_page": max(1, min(int(count or 10), 100))}
+        if domain:
+            payload["q_organization_domains_list"] = [domain]
+        elif keywords:
+            payload["q_keywords"] = str(keywords)
+        else:
+            raise ValueError("keywords or domain required")
+        data = self._http_json(
+            "POST", "https://api.apollo.io/api/v1/organizations/search",
+            payload, self._apollo_headers(), timeout=90)
+        out = []
+        for o in (data or {}).get("organizations") or []:
+            d = _domain_of(o.get("primary_domain") or o.get("website_url") or "")
+            rec = {
+                "domain": d or _domain_of(domain or ""),
+                "name": o.get("name"),
+                "website": o.get("website_url"),
+                "industry": o.get("industry"),
+                "employees": (str(o["estimated_num_employees"])
+                              if o.get("estimated_num_employees") else None),
+                "location": o.get("raw_address"),
+                "city": o.get("city"), "state": o.get("state"),
+                "country": o.get("country"),
+                "description": o.get("short_description") or o.get("seo_description"),
+                "linkedin": o.get("linkedin_url"),
+                "funding_stage": o.get("latest_funding_stage"),
+                "tech_stack": o.get("technology_names") or [],
+            }
+            rec = {k: v for k, v in rec.items() if v}
+            if rec.get("domain"):
+                cid, _ = self.upsert_company(rec)
+                rec["company_id"] = cid
+            out.append(rec)
+        self._log("apollo_company_search", {"keywords": keywords, "domain": domain,
+                                            "count": len(out)})
+        return {"source": "apollo", "companies": out}
+
+    def apollo_enrich(self, email=None, name=None, domain=None, linkedin_url=None,
+                      organization_name=None):
+        """Enrich a contact via Apollo people/match. One request; free if no
+        credit-consuming data is found, else 1 credit (email/demographics).
+        Falls back to free organization search when people/match is unavailable
+        (e.g. free plan, which excludes people APIs)."""
+        payload = self._apollo_payload(email, name, domain, linkedin_url, organization_name)
+        if not payload:
+            raise ValueError("email, name, or domain required")
+        try:
+            data = self._http_json(
+                "POST", "https://api.apollo.io/api/v1/people/match",
+                payload, self._apollo_headers(), timeout=90)
+        except RuntimeError as e:
+            if "403" in str(e):
+                # free plan: people/match unavailable, fall back to company data
+                return self.apollo_company_search(
+                    domain=domain or None, keywords=organization_name or None, count=5)
+            raise
+        p = (data or {}).get("person") or {}
+        if not p:
+            self._log("enrich_contact", {"matched": False,
+                                         "domain": _domain_of(domain or "")})
+            return {"matched": False}
+        org = p.get("organization") or {}
+        result = {
+            "matched": True,
+            "apollo_id": p.get("id"),
+            "contact_name": p.get("name"),
+            "contact_email": p.get("email"),
+            "title": p.get("title"),
+            "linkedin": p.get("linkedin_url"),
+            "phone": (p.get("contact") or {}).get("sanitized_phone")
+                     or (p.get("phone_numbers") or [{}])[0].get("sanitized_number"),
+            "location": ", ".join(x for x in (p.get("city"), p.get("state"),
+                                              p.get("country")) if x),
+            "seniority": p.get("seniority"),
+            "company": {
+                "name": org.get("name"),
+                "domain": _domain_of(org.get("primary_domain") or domain or ""),
+                "website": org.get("website_url"),
+                "industry": org.get("industry"),
+                "employees": (str(org["estimated_num_employees"])
+                              if org.get("estimated_num_employees") else None),
+                "location": org.get("raw_address"),
+                "description": org.get("short_description") or org.get("seo_description"),
+                "tech_stack": org.get("technology_names") or [],
+                "funding_stage": org.get("latest_funding_stage"),
+            },
+        }
+        company = {k: v for k, v in result["company"].items() if v}
+        if company.get("domain"):
+            cid, _ = self.upsert_company(company)
+            lid, _ = self.upsert_lead(cid, {
+                "contact_name": result["contact_name"],
+                "contact_email": result["contact_email"],
+                "title": result["title"], "linkedin": result["linkedin"]})
+            result["company_id"] = cid
+            result["lead_id"] = lid
+        self._log("enrich_contact", {"apollo_id": result["apollo_id"],
+                                     "domain": company.get("domain"),
+                                     "matched": True})
+        return result
+
+    @staticmethod
+    def _apollo_payload(email, name, domain, linkedin_url, organization_name):
+        payload = {}
+        if email:
+            payload["email"] = email
+        if name:
+            parts = str(name).split(None, 1)
+            payload["first_name"] = parts[0]
+            if len(parts) > 1:
+                payload["last_name"] = parts[1]
+        if domain:
+            payload["domain"] = _domain_of(domain)
+        if linkedin_url:
+            payload["linkedin_url"] = linkedin_url
+        if organization_name:
+            payload["organization_name"] = organization_name
+        return payload
 
     # ---------- 3. CRM management (upsert) ----------
 
@@ -463,6 +593,11 @@ class SalesAgent(BaseAgent):
             "discover_companies": lambda: self.discover_companies(
                 task.get("criteria"), task.get("count", 10)),
             "enrich_company": lambda: self.enrich_company(task.get("url")),
+            "enrich_contact": lambda: self.apollo_enrich(
+                task.get("email"), task.get("name"), task.get("domain"),
+                task.get("linkedin_url"), task.get("organization_name")),
+            "apollo_search": lambda: self.apollo_company_search(
+                task.get("keywords"), task.get("domain"), task.get("count", 10)),
             "update_crm": lambda: self.update_crm(
                 task.get("company") or {}, task.get("lead") or {}),
             "draft_email": lambda: self.draft_email(
@@ -493,6 +628,19 @@ def demo():
     assert _domain_of("https://www.Acme.com/team") == "acme.com"
     assert _domain_of("acme.io") == "acme.io"
     assert _domain_of("") is None
+    assert a._apollo_payload("j@acme.com", "Jane Doe", "Acme.com", None, None) == {
+        "email": "j@acme.com", "first_name": "Jane", "last_name": "Doe",
+        "domain": "acme.com"}
+    assert a._apollo_payload(None, None, None, None, None) == {}
+    def _mock_http(method, url, payload=None, headers=None, timeout=60, form=False):
+        if "people/match" in url:
+            raise RuntimeError("https://api.apollo.io/api/v1/people/match -> HTTP 403: nope")
+        return {"organizations": [{"name": "Acme Inc", "primary_domain": "acme.com",
+                                   "estimated_num_employees": 120,
+                                   "industry": "software"}]}
+    a._http_json = _mock_http
+    fb = a.apollo_enrich(name="Jane", domain="acme.com")
+    assert fb.get("source") == "apollo" and fb["companies"][0]["name"] == "Acme Inc", fb
     print("SalesAgent demo OK")
 
 
